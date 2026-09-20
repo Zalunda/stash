@@ -39,16 +39,16 @@ type SceneServer struct {
 	SceneCoverGetter SceneCoverGetter
 }
 
-func (s *SceneServer) StreamSceneDirect(scene *models.Scene, w http.ResponseWriter, r *http.Request) {
-	// #3526 - return 404 if the scene does not have any files
-	if scene.Path == "" {
+func (s *SceneServer) StreamSceneDirect(scene *models.Scene, file *models.VideoFile, w http.ResponseWriter, r *http.Request) {
+	// Return 404 if the file is missing or has no path
+	if file == nil || file.Path == "" {
 		http.Error(w, http.StatusText(404), 404)
 		return
 	}
 
 	sceneHash := scene.GetHash(config.GetInstance().GetVideoFileNamingAlgorithm())
 
-	fp := GetInstance().Paths.Scene.GetStreamPath(scene.Path, sceneHash)
+	fp := GetInstance().Paths.Scene.GetStreamPath(file.Path, sceneHash)
 	streamRequestCtx := ffmpeg.NewStreamRequestContext(w, r)
 
 	// #2579 - hijacking and closing the connection here causes video playback to fail in Safari

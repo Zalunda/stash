@@ -598,6 +598,8 @@ func (me *Server) initMux(mux *http.ServeMux) {
 		sceneId := r.URL.Query().Get("scene")
 		var scene *models.Scene
 		var videoDuration float64
+		var targetFile *models.VideoFile
+
 		repo := me.repository
 		err := repo.WithReadTxn(r.Context(), func(ctx context.Context) error {
 			sceneIdInt, err := strconv.Atoi(sceneId)
@@ -612,6 +614,7 @@ func (me *Server) initMux(mux *http.ServeMux) {
 				}
 				if f := scene.Files.Primary(); f != nil {
 					videoDuration = f.Duration
+					targetFile = f
 				}
 			}
 			return nil
@@ -620,7 +623,8 @@ func (me *Server) initMux(mux *http.ServeMux) {
 			logger.Warnf("failed to execute read transaction for scene id (%v): %v", sceneId, err)
 		}
 
-		if scene == nil {
+		// Bail out if either the scene or the file doesn't exist
+		if scene == nil || targetFile == nil {
 			return
 		}
 
@@ -634,7 +638,7 @@ func (me *Server) initMux(mux *http.ServeMux) {
 			me.activityTracker.RecordRequest(sceneIdInt, clientIP, videoDuration)
 		}
 
-		me.sceneServer.StreamSceneDirect(scene, w, r)
+		me.sceneServer.StreamSceneDirect(scene, targetFile, w, r)
 	})
 	mux.HandleFunc(rootDescPath, func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("content-type", `text/xml; charset="utf-8"`)

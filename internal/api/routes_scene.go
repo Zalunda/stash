@@ -80,6 +80,23 @@ func (rs sceneRoutes) Routes() chi.Router {
 		r.Get("/interactive_heatmap", rs.InteractiveHeatmap)
 		r.Get("/caption", rs.CaptionLang)
 
+		// File-specific endpoints
+		r.Route("/files/{fileId}", func(r chi.Router) {
+			r.Get("/stream", rs.StreamDirect)
+			r.Get("/stream.mp4", rs.StreamMp4)
+			r.Get("/stream.webm", rs.StreamWebM)
+			r.Get("/stream.mkv", rs.StreamMKV)
+			r.Get("/stream.m3u8", rs.StreamHLS)
+			r.Get("/stream.m3u8/{segment}.ts", rs.StreamHLSSegment)
+			r.Get("/stream.mpd", rs.StreamDASH)
+			r.Get("/stream.mpd/{segment}_v.webm", rs.StreamDASHVideoSegment)
+			r.Get("/stream.mpd/{segment}_a.webm", rs.StreamDASHAudioSegment)
+
+			r.Get("/funscript", rs.Funscript)
+			r.Get("/interactive_csv", rs.InteractiveCSV)
+			r.Get("/caption", rs.CaptionLang)
+		})
+
 		r.Get("/scene_marker/{sceneMarkerId}/stream", rs.SceneMarkerStream)
 		r.Get("/scene_marker/{sceneMarkerId}/preview", rs.SceneMarkerPreview)
 		r.Get("/scene_marker/{sceneMarkerId}/screenshot", rs.SceneMarkerScreenshot)
@@ -90,13 +107,37 @@ func (rs sceneRoutes) Routes() chi.Router {
 	return r
 }
 
+// Helper method to retrieve the requested file, or fallback to the primary file
+func (rs sceneRoutes) getTargetFile(r *http.Request, scene *models.Scene) *models.VideoFile {
+	fileIDStr := chi.URLParam(r, "fileId")
+	if fileIDStr != "" {
+		if fileID, err := strconv.Atoi(fileIDStr); err == nil {
+			for _, f := range scene.Files {
+				if f.Base() != nil && int(f.Base().ID) == fileID {
+					return f
+				}
+			}
+		}
+		return nil // Invalid or missing file
+	}
+	return scene.Files.Primary()
+}
+
 func (rs sceneRoutes) StreamDirect(w http.ResponseWriter, r *http.Request) {
 	scene := r.Context().Value(sceneKey).(*models.Scene)
+
+	file := rs.getTargetFile(r, scene)
+	if file == nil {
+		http.Error(w, "File not found", http.StatusNotFound)
+		return
+	}
+
 	ss := manager.SceneServer{
 		TxnManager:       rs.txnManager,
 		SceneCoverGetter: rs.sceneFinder,
 	}
-	ss.StreamSceneDirect(scene, w, r)
+
+	ss.StreamSceneDirect(scene, file, w, r)
 }
 
 func (rs sceneRoutes) StreamMp4(w http.ResponseWriter, r *http.Request) {
@@ -108,11 +149,11 @@ func (rs sceneRoutes) StreamWebM(w http.ResponseWriter, r *http.Request) {
 }
 
 func (rs sceneRoutes) StreamMKV(w http.ResponseWriter, r *http.Request) {
-	// only allow mkv streaming if the scene container is an mkv already
 	scene := r.Context().Value(sceneKey).(*models.Scene)
 
-	pf := scene.Files.Primary()
+	pf := rs.getTargetFile(r, scene)
 	if pf == nil {
+		http.Error(w, "File not found", http.StatusNotFound)
 		return
 	}
 
@@ -121,6 +162,7 @@ func (rs sceneRoutes) StreamMKV(w http.ResponseWriter, r *http.Request) {
 		logger.Errorf("[transcode] error getting container: %v", err)
 	}
 
+	// only allow mkv streaming if the target file container is an mkv already
 	if container != ffmpeg.Matroska {
 		w.WriteHeader(http.StatusBadRequest)
 		if _, err := w.Write([]byte("not an mkv file")); err != nil {
@@ -135,14 +177,15 @@ func (rs sceneRoutes) StreamMKV(w http.ResponseWriter, r *http.Request) {
 func (rs sceneRoutes) streamTranscode(w http.ResponseWriter, r *http.Request, streamType ffmpeg.StreamFormat) {
 	scene := r.Context().Value(sceneKey).(*models.Scene)
 
-	streamManager := manager.GetInstance().StreamManager
-	if streamManager == nil {
-		http.Error(w, "Live transcoding disabled", http.StatusServiceUnavailable)
+	f := rs.getTargetFile(r, scene)
+	if f == nil {
+		http.Error(w, "File not found", http.StatusNotFound)
 		return
 	}
 
-	f := scene.Files.Primary()
-	if f == nil {
+	streamManager := manager.GetInstance().StreamManager
+	if streamManager == nil {
+		http.Error(w, "Live transcoding disabled", http.StatusServiceUnavailable)
 		return
 	}
 
@@ -161,7 +204,7 @@ func (rs sceneRoutes) streamTranscode(w http.ResponseWriter, r *http.Request, st
 		StartTime:  ss,
 	}
 
-	logger.Debugf("[transcode] streaming scene %d as %s", scene.ID, streamType.MimeType)
+	logger.Debugf("[transcode] streaming scene %d file %d as %s", scene.ID, f.Base().ID, streamType.MimeType)
 	streamManager.ServeTranscode(w, r, options)
 }
 
@@ -176,14 +219,15 @@ func (rs sceneRoutes) StreamDASH(w http.ResponseWriter, r *http.Request) {
 func (rs sceneRoutes) streamManifest(w http.ResponseWriter, r *http.Request, streamType *ffmpeg.StreamType, logName string) {
 	scene := r.Context().Value(sceneKey).(*models.Scene)
 
-	streamManager := manager.GetInstance().StreamManager
-	if streamManager == nil {
-		http.Error(w, "Live transcoding disabled", http.StatusServiceUnavailable)
+	f := rs.getTargetFile(r, scene)
+	if f == nil {
+		http.Error(w, "File not found", http.StatusNotFound)
 		return
 	}
 
-	f := scene.Files.Primary()
-	if f == nil {
+	streamManager := manager.GetInstance().StreamManager
+	if streamManager == nil {
+		http.Error(w, "Live transcoding disabled", http.StatusServiceUnavailable)
 		return
 	}
 
@@ -193,7 +237,7 @@ func (rs sceneRoutes) streamManifest(w http.ResponseWriter, r *http.Request, str
 
 	resolution := r.Form.Get("resolution")
 
-	logger.Debugf("[transcode] returning %s manifest for scene %d", logName, scene.ID)
+	logger.Debugf("[transcode] returning %s manifest for scene %d file %d", logName, scene.ID, f.Base().ID)
 	streamManager.ServeManifest(w, r, streamType, f, resolution)
 }
 
@@ -212,14 +256,15 @@ func (rs sceneRoutes) StreamDASHAudioSegment(w http.ResponseWriter, r *http.Requ
 func (rs sceneRoutes) streamSegment(w http.ResponseWriter, r *http.Request, streamType *ffmpeg.StreamType) {
 	scene := r.Context().Value(sceneKey).(*models.Scene)
 
-	streamManager := manager.GetInstance().StreamManager
-	if streamManager == nil {
-		http.Error(w, "Live transcoding disabled", http.StatusServiceUnavailable)
+	f := rs.getTargetFile(r, scene)
+	if f == nil {
+		http.Error(w, "File not found", http.StatusNotFound)
 		return
 	}
 
-	f := scene.Files.Primary()
-	if f == nil {
+	streamManager := manager.GetInstance().StreamManager
+	if streamManager == nil {
+		http.Error(w, "Live transcoding disabled", http.StatusServiceUnavailable)
 		return
 	}
 
@@ -227,7 +272,12 @@ func (rs sceneRoutes) streamSegment(w http.ResponseWriter, r *http.Request, stre
 		logger.Warnf("[transcode] error parsing query form: %v", err)
 	}
 
+	// Make segment hash specific to the file if a fileId was queried,
+	// avoiding cached segment conflicts for multiple files within the same scene.
 	sceneHash := scene.GetHash(config.GetInstance().GetVideoFileNamingAlgorithm())
+	if chi.URLParam(r, "fileId") != "" {
+		sceneHash += "_" + strconv.Itoa(int(f.Base().ID))
+	}
 
 	segment := chi.URLParam(r, "segment")
 	resolution := r.Form.Get("resolution")
@@ -378,14 +428,29 @@ func (rs sceneRoutes) VttSprite(w http.ResponseWriter, r *http.Request) {
 
 func (rs sceneRoutes) Funscript(w http.ResponseWriter, r *http.Request) {
 	s := r.Context().Value(sceneKey).(*models.Scene)
-	filepath := video.GetFunscriptPath(s.Path)
+
+	file := rs.getTargetFile(r, s)
+	if file == nil {
+		http.Error(w, "File not found", http.StatusNotFound)
+		return
+	}
+
+	// Funscripts are linked to the actual file path now
+	filepath := video.GetFunscriptPath(file.Path)
 
 	utils.ServeStaticFile(w, r, filepath)
 }
 
 func (rs sceneRoutes) InteractiveCSV(w http.ResponseWriter, r *http.Request) {
 	s := r.Context().Value(sceneKey).(*models.Scene)
-	filepath := video.GetFunscriptPath(s.Path)
+
+	file := rs.getTargetFile(r, s)
+	if file == nil {
+		http.Error(w, "File not found", http.StatusNotFound)
+		return
+	}
+
+	filepath := video.GetFunscriptPath(file.Path)
 
 	// TheHandy directly only accepts interactive CSVs
 	csvBytes, err := manager.ConvertFunscriptToCSV(filepath)
@@ -408,16 +473,16 @@ func (rs sceneRoutes) InteractiveHeatmap(w http.ResponseWriter, r *http.Request)
 func (rs sceneRoutes) Caption(w http.ResponseWriter, r *http.Request, lang string, ext string) {
 	s := r.Context().Value(sceneKey).(*models.Scene)
 
+	file := rs.getTargetFile(r, s)
+	if file == nil {
+		http.Error(w, "File not found", http.StatusNotFound)
+		return
+	}
+
 	var captions []*models.VideoCaption
 	readTxnErr := rs.withReadTxn(r, func(ctx context.Context) error {
 		var err error
-		primaryFile := s.Files.Primary()
-		if primaryFile == nil {
-			return nil
-		}
-
-		captions, err = rs.captionFinder.GetCaptions(ctx, primaryFile.Base().ID)
-
+		captions, err = rs.captionFinder.GetCaptions(ctx, file.Base().ID)
 		return err
 	})
 	if errors.Is(readTxnErr, context.Canceled) {
@@ -434,7 +499,8 @@ func (rs sceneRoutes) Caption(w http.ResponseWriter, r *http.Request, lang strin
 			continue
 		}
 
-		sub, err := video.ReadSubs(caption.Path(s.Path))
+		// Retrieve correct path using the target file Path property
+		sub, err := video.ReadSubs(caption.Path(file.Path))
 		if err != nil {
 			logger.Warnf("error while reading subs: %v", err)
 			http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -580,12 +646,23 @@ func (rs sceneRoutes) SceneCtx(next http.Handler) http.Handler {
 			scene, _ = qb.Find(ctx, sceneID)
 
 			if scene != nil {
-				if err := scene.LoadPrimaryFile(ctx, rs.fileGetter); err != nil {
-					if !errors.Is(err, context.Canceled) {
-						logger.Errorf("error loading primary file for scene %d: %v", sceneID, err)
+				// We intercept URL strings to ensure all files are fully loaded
+				// instead of just the primary file when accessing "/files/".
+				if strings.Contains(r.URL.Path, "/files/") {
+					if err := scene.LoadFiles(ctx, rs.fileGetter); err != nil {
+						if !errors.Is(err, context.Canceled) {
+							logger.Errorf("error loading files for scene %d: %v", sceneID, err)
+						}
+						scene = nil
 					}
-					// set scene to nil so that it doesn't try to use the primary file
-					scene = nil
+				} else {
+					if err := scene.LoadPrimaryFile(ctx, rs.fileGetter); err != nil {
+						if !errors.Is(err, context.Canceled) {
+							logger.Errorf("error loading primary file for scene %d: %v", sceneID, err)
+						}
+						// set scene to nil so that it doesn't try to use the primary file
+						scene = nil
+					}
 				}
 			}
 

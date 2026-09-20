@@ -67,7 +67,7 @@ type dmsConfig struct {
 }
 
 type sceneServer interface {
-	StreamSceneDirect(scene *models.Scene, w http.ResponseWriter, r *http.Request)
+	StreamSceneDirect(scene *models.Scene, file *models.VideoFile, w http.ResponseWriter, r *http.Request)
 	ServeScreenshot(scene *models.Scene, w http.ResponseWriter, r *http.Request)
 }
 
