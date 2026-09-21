@@ -112,14 +112,26 @@ func (rs sceneRoutes) getTargetFile(r *http.Request, scene *models.Scene) *model
 	fileIDStr := chi.URLParam(r, "fileId")
 	if fileIDStr != "" {
 		if fileID, err := strconv.Atoi(fileIDStr); err == nil {
-			for _, f := range scene.Files {
-				if f.Base() != nil && int(f.Base().ID) == fileID {
-					return f
+			var target *models.VideoFile
+
+			_ = rs.withReadTxn(r, func(ctx context.Context) error {
+				files, err := rs.fileGetter.Find(ctx, models.FileID(fileID))
+
+				if err == nil && len(files) > 0 {
+					// Cast the generic models.File interface back into a concrete VideoFile
+					if vf, ok := files[0].(*models.VideoFile); ok {
+						target = vf
+					}
 				}
-			}
+				return nil
+			})
+
+			return target
 		}
 		return nil // Invalid or missing file
 	}
+
+	// Fallback to the primary file if no fileId is specified in the URL
 	return scene.Files.Primary()
 }
 
@@ -646,23 +658,12 @@ func (rs sceneRoutes) SceneCtx(next http.Handler) http.Handler {
 			scene, _ = qb.Find(ctx, sceneID)
 
 			if scene != nil {
-				// We intercept URL strings to ensure all files are fully loaded
-				// instead of just the primary file when accessing "/files/".
-				if strings.Contains(r.URL.Path, "/files/") {
-					if err := scene.LoadFiles(ctx, rs.fileGetter); err != nil {
-						if !errors.Is(err, context.Canceled) {
-							logger.Errorf("error loading files for scene %d: %v", sceneID, err)
-						}
-						scene = nil
+				if err := scene.LoadPrimaryFile(ctx, rs.fileGetter); err != nil {
+					if !errors.Is(err, context.Canceled) {
+						logger.Errorf("error loading primary file for scene %d: %v", sceneID, err)
 					}
-				} else {
-					if err := scene.LoadPrimaryFile(ctx, rs.fileGetter); err != nil {
-						if !errors.Is(err, context.Canceled) {
-							logger.Errorf("error loading primary file for scene %d: %v", sceneID, err)
-						}
-						// set scene to nil so that it doesn't try to use the primary file
-						scene = nil
-					}
+					// set scene to nil so that it doesn't try to use the primary file
+					scene = nil
 				}
 			}
 
