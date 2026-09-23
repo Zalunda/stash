@@ -81,7 +81,7 @@ func (rs sceneRoutes) Routes() chi.Router {
 		r.Get("/caption", rs.CaptionLang)
 
 		// File-specific endpoints
-		r.Route("/files/{fileId}", func(r chi.Router) {
+		r.Route("/file/{fileId}", func(r chi.Router) {
 			r.Get("/stream", rs.StreamDirect)
 			r.Get("/stream.mp4", rs.StreamMp4)
 			r.Get("/stream.webm", rs.StreamWebM)
